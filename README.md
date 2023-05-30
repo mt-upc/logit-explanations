@@ -23,7 +23,7 @@ Create a conda environment and install requirements:
 ```bash
 conda env create -n alti python=3.10.9
 conda activate alti
-cd transformer_contributions
+cd logit-explanations
 pip install -r requirements.txt
 ```
 
