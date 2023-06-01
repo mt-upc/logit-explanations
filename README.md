@@ -39,7 +39,7 @@ Add to `./src/config.yaml` your model with the required layers' names. For examp
 gpt2:
     layer: 'transformer.h' # prefix of model's layers
     ln1: 'ln_1' # first layernorm name
-    ln2: 'ln_2' #second layernorm name
+    ln2: 'ln_2' # second layernorm name
     values: 'attn.c_attn' # linear layer to compute the values
     dense: 'attn.c_proj' # linear layer to compute output attention
     lnf: 'transformer.ln_f' # final layernorm (before unembedding)

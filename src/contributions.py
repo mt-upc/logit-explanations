@@ -4,9 +4,6 @@ from functools import partial
 import collections
 import torch.nn as nn
 import numpy as np
-
-#import opt_einsum as oe
-
 from pyaml_env import parse_config
 config = parse_config("./src/config.yaml")
 
@@ -33,12 +30,15 @@ class ModelWrapper(nn.Module):
         super(ModelWrapper, self).__init__()
 
         self.model = model
-
         self.modules_config = config['models'][model.config.model_type]
-
         self.num_attention_heads = self.model.config.num_attention_heads
         self.attention_head_size = int(self.model.config.hidden_size / self.model.config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
+        # Get number of layers in model
+        try:
+            self.num_layers = self.model.config.n_layers
+        except:
+            self.num_layers = self.model.config.num_hidden_layers
 
     def save_activation(self,name, mod, inp, out):
         self.func_inputs[name].append(inp)
@@ -190,25 +190,19 @@ class ModelWrapper(nn.Module):
         logits_modules['mlp_logit_layers'] = []
         logits_modules['b_o_logits_layers'] = []
 
-        # Get number of layers in model
-        try:
-            num_layers = self.model.config.n_layers
-        except:
-            num_layers = self.model.config.num_hidden_layers
-
         # Cached activations of every layer in the model after the forward-pass
         func_outputs = self.func_outputs
         func_inputs = self.func_inputs
 
         # Last layer info
-        modules_dict = self.get_modules_model(num_layers-1)
+        modules_dict = self.get_modules_model(self.num_layers-1)
         model_info_dict = self.modules_config
         model_layer_name = model_info_dict['layer']
 
         # Last residual state = output MLP (last_fc2_out) + residual before MLP (last_pre_ln2_states)
         # TODO. This doesn't hold for post-ln models!
-        last_pre_ln2_states = func_inputs[model_layer_name + '.' + str(num_layers-1) + '.' + self.modules_config['ln2']][0][0].squeeze()
-        last_fc2_out = func_outputs[model_layer_name + '.' + str(num_layers-1) + '.' + self.modules_config['fc2']][0].squeeze()
+        last_pre_ln2_states = func_inputs[model_layer_name + '.' + str(self.num_layers-1) + '.' + self.modules_config['ln2']][0][0].squeeze()
+        last_fc2_out = func_outputs[model_layer_name + '.' + str(self.num_layers-1) + '.' + self.modules_config['fc2']][0].squeeze()
 
         # Input of Final Layernorm
         # Will use this to project through the unembedding matrix
@@ -233,7 +227,7 @@ class ModelWrapper(nn.Module):
         else:
             embed_matrix = embed_matrix
             
-        for layer in range(0,num_layers):
+        for layer in range(0,self.num_layers):
             hidden_states_layer = hidden_states[layer].detach()
             modules_dict = self.get_modules_model(layer)
             model_layer_name = self.modules_config['layer']
@@ -288,7 +282,7 @@ class ModelWrapper(nn.Module):
             biases_term_src = biases_term_attn_heads.sum(0)
             # Sum over inputs (j paper) and b_o
             # biases_term -> [t, d]
-            biases_term = biases_term_src.sum(-2) + b_o
+            #biases_term = biases_term_src.sum(-2) + b_o
 
             # layer_input -> [s, 1, d]
             layer_input = self.func_inputs[model_layer_name + '.' + str(layer) + '.' + self.modules_config['ln1']][0][0].squeeze().unsqueeze(1)

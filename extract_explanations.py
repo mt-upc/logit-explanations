@@ -15,7 +15,7 @@ from lm_saliency import *
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-our_methods = ['logit_attn_full', 'logit_attn_full_alti', 'logit_attn_simp', 'logit_attn_simp_alti']
+our_methods = ['logit_aff_x_j', 'logit_aff_x_j_alti']
 
 
 def read_sva_dataset():
@@ -67,17 +67,17 @@ def tokens2words(tokenized_text, bos=False):
             tokens_in_words[-1].append(counter)
     return tokens_in_words, words
 
-def track2input_tokens(dict_logit_attn_methods, contributions_mix_alti, mlp_logit_layers, token_list):
+def track2input_tokens(logit_trans_vect_dict, methods, contributions_mix_alti, token_list):
     '''Gets layer-wise Attn logits contributions and tracks them down to the input.
-            dict_logit_attn_methods: dictionary 'logit_attn_simp' and 'logit_attn_full'
+            logit_trans_vect_dict: dictionary 'logit_attn_simp' and 'logit_attn_full'
             contributions_mix_alti: layerwise ALTI contributions
     '''
     results_dict = defaultdict(list)
     for token in range(len(token_list)):
-        for method in dict_logit_attn_methods.keys():
-            layerwise_contributions = dict_logit_attn_methods[method]
+        for method in methods:
+            layerwise_contributions = logit_trans_vect_dict[method]
             # Assume no token mixing across layers
-            results_dict[method].append(layerwise_contributions[:, -1, token].cpu().detach())
+            results_dict[f'logit_{method}'].append(layerwise_contributions[:, -1, token].cpu().detach())
 
             for layer in range(0,layerwise_contributions.shape[0]):
                 # Track contributions to the input via ALTI (contributions_mix_alti), M matrix in the paper
@@ -88,10 +88,9 @@ def track2input_tokens(dict_logit_attn_methods, contributions_mix_alti, mlp_logi
                     token_layer_contribs = torch.matmul(layerwise_contributions[layer, -1, token].cpu().detach(),contributions_mix_alti[layer-1])
                     alti_logit_layer_token = torch.cat([alti_logit_layer_token, token_layer_contribs.unsqueeze(0)], dim=0)
 
-            results_dict[f'{method}_alti'].append(alti_logit_layer_token)
+            results_dict[f'logit_{method}_alti'].append(alti_logit_layer_token)
 
     return results_dict
-
 
 def main(args):
     name_path = args.name_path
@@ -168,9 +167,9 @@ def main(args):
             if 'ours' in explanation_type:
                 for method in our_methods:
                     explanations_dict[method].append(contra_explanation.tolist())
-                    if method == 'logit_attn_full' or method == 'logit_attn_full_alti':
-                        for layer in range(num_layers):
-                            explanations_dict[f'{method}_layer_{str(layer)}'].append(contra_explanation.tolist())
+                    #if method == 'logit_aff_x_j' or method == 'logit_aff_x_j_alti':
+                    for layer in range(num_layers):
+                        explanations_dict[f'{method}_layer_{str(layer)}'].append(contra_explanation.tolist())
                 
                 logits_modules_list.append('NA')
                 info_sentence.append([text, 0, CORRECT_ID, FOIL_ID])
@@ -185,36 +184,30 @@ def main(args):
 
         if 'ours' in explanation_type:
             # Run inference
-            logits, hidden_states, attentions, contributions_data = model_wrapped(pt_batch)
+            logits, hidden_states, attentions = model_wrapped(pt_batch)
             correct_id_logit = logits[0, -1, CORRECT_ID].item()
             foil_id_logit = logits[0, -1, FOIL_ID].item()
             info_sentence.append([text, correct_id_logit - foil_id_logit, CORRECT_ID, FOIL_ID])
 
-            # ALTI results
-            resultant_norm = torch.norm(torch.squeeze(contributions_data['resultants']),p=1,dim=-1)
-            normalized_contributions_alti = utils_contributions.normalize_contributions(contributions_data['contributions'],scaling='min_sum',resultant_norm=resultant_norm)
-            contributions_mix_alti = utils_contributions.compute_joint_attention(normalized_contributions_alti)
-
             # Our Approach (layerwise logits contributions)
             # Contrastive explanation
             token = [CORRECT_ID, FOIL_ID]
-            #logits_transformed_vectors_accum, logits_modules, np_logits_lin_x_j_diff = model_wrapped.get_logit_contributions(hidden_states, attentions, token, tokenized_text)
-            logit_trans_vect_dict, logits_modules, alti_data = model_wrapped.get_logit_contributions(hidden_states, attentions, token, tokenized_text)
-            dict_logit_attn_methods = {'logit_attn_full': logit_trans_vect_dict['aff_x_j'],
-                            'logit_attn_simp': logit_trans_vect_dict['lin_x_j']}   
+            logit_trans_vect_dict, logits_modules, layer_alti_data = model_wrapped.get_logit_contributions(hidden_states, attentions, token)
+            # ALTI results
+            contributions_mix_alti = utils_contributions.compute_alti(layer_alti_data)
+            methods_decomp = ['aff_x_j'] # Logits Affine part of layer-wise decomposition
             # Track layer-wise Attn and MLPs contributions to input
-            alti_lg_dict = track2input_tokens(dict_logit_attn_methods, contributions_mix_alti, logits_modules['mlp_logit_layers'], token)
-            
+            alti_lg_dict = track2input_tokens(logit_trans_vect_dict, methods_decomp, contributions_mix_alti, token)
+
             for method in our_methods:
                 # Get logit difference between tokens and sum across layers
                 contrastive_contributions = (alti_lg_dict[method][0] - alti_lg_dict[method][1]).sum(0)
                 explanations_dict[method].append(contrastive_contributions.tolist())
-                if method == 'logit_attn_full' or method == 'logit_attn_full_alti':
-                    for layer in range(num_layers):
-                        contrastive_contributions = (alti_lg_dict[method][0][layer] - alti_lg_dict[method][1][layer])
-                        explanations_dict[f'{method}_layer_{str(layer)}'].append(contrastive_contributions.tolist())
+                #if method == 'logit_attn_full' or method == 'logit_attn_full_alti':
+                for layer in range(num_layers):
+                    contrastive_contributions = (alti_lg_dict[method][0][layer] - alti_lg_dict[method][1][layer])
+                    explanations_dict[f'{method}_layer_{str(layer)}'].append(contrastive_contributions.tolist())
                 
-
             # Add difference logits
             logits_modules['correct_id_logit'] = correct_id_logit
             logits_modules['foil_id_logit'] = foil_id_logit
@@ -254,7 +247,6 @@ def main(args):
     elif dataset == 'ioi':
         os.makedirs(f'./results/ioi', exist_ok = True)
         save_dir = f'./results/ioi/{dataset}_{name_path}_{explanation_type}.json'
-
     else:
         os.makedirs(f'./results/blimp', exist_ok = True)
         save_dir = f'./results/blimp/{dataset}_{name_path}_{explanation_type}.json'
