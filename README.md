@@ -21,7 +21,7 @@ Clone this repostitory:
 
 Create a conda environment and install requirements:
 ```bash
-conda env create -n alti python=3.10.9
+conda create -n alti python=3.10.9
 conda activate alti
 cd logit-explanations
 pip install -r requirements.txt
